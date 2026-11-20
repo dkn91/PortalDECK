@@ -127,6 +127,7 @@
       method: action ? 'POST' : 'GET',
       headers: {},
       mode: 'same-origin',
+      referrerPolicy: 'same-origin',
       redirect: 'error',
       cache: 'no-store',
       credentials: 'omit'
