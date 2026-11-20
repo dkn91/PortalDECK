@@ -9,6 +9,9 @@ $ErrorActionPreference = 'Stop'
 if ($LockLast -and -not $Hardware) { throw '-LockLast requires -Hardware.' }
 & dotnet run --project (Join-Path $PSScriptRoot 'Tests/ApiTests.csproj')
 if ($LASTEXITCODE -ne 0) { throw 'Loopback API tests failed.' }
+$node = (Get-Command node -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+& $node --test (Join-Path $PSScriptRoot 'Tests/dashboard.test.js')
+if ($LASTEXITCODE -ne 0) { throw 'Dashboard tests failed.' }
 if (-not $Hardware) { return }
 if ($env:OS -ne 'Windows_NT') { throw 'Hardware validation requires the deployed Windows companion and Portal.' }
 
