@@ -1,0 +1,15 @@
+/artifacts/
+[Bb]in/
+[Oo]bj/
+.vs/
+*.user
+*.suo
+*.apk
+*.idsig
+*.jks
+*.keystore
+*.password
+pairing-token
+companion.pfx
+companion-pin
+device.json

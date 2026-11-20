@@ -1,439 +1,72 @@
-# PortalDECK
+# PortalDeck
 
-> Convert your Facebook/Meta Portal into a Steam Deck-style touchscreen dashboard that controls your Windows PC over USB/ADB.
+PortalDeck turns an Android-based Facebook/Meta Portal into a USB-connected touchscreen dashboard for a Windows PC. The Portal runs a small Android app; the Windows companion serves the dashboard and performs actions on the PC. This is not a game streaming client.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Platform: Windows](https://img.shields.io/badge/Platform-Windows-blue.svg)]()
-[![Platform: Android](https://img.shields.io/badge/Platform-Android-green.svg)]()
-[![ADB](https://img.shields.io/badge/ADB-USB%20Connection-orange.svg)]()
+## Requirements
 
----
+- Windows PC and an Android-based Portal with Android API 24 or newer, USB debugging available, and a USB data cable. Enable USB debugging using the controls available for your device and approve the Windows PC on the Portal.
+- [PowerShell 7.4+](https://learn.microsoft.com/powershell/scripting/install/installing-powershell) (`pwsh`), [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) for Windows builds, and JDK 17 for Android builds. Set `JAVA_HOME` to the JDK or put its `bin` directory on `PATH`.
+- Official [Android command-line tools](https://developer.android.com/studio#command-tools) and [Platform Tools](https://developer.android.com/tools/releases/platform-tools). Download from Google, not a third-party mirror. Where a download page publishes a SHA-256 checksum, compare it against `Get-FileHash -Algorithm SHA256 <downloaded-file>` before extracting. Use `sdkmanager` to install the following packages and review and accept the SDK licenses:
 
-## 🎯 Overview
+  ```text
+  sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+  sdkmanager --licenses
+  ```
 
-**PortalDECK** transforms your Meta/Facebook Portal (Android-based smart display) into a fully functional **Stream Deck-style touchscreen controller** for your Windows PC. Unlike traditional Stream Decks that connect via Wi-Fi/Bluetooth, PortalDECK uses a **direct USB/ADB connection** for ultra-low latency, reliable communication.
+  Set `ANDROID_HOME` to the SDK root (`ANDROID_SDK_ROOT` also works). Use the official SDK Manager package list (`sdkmanager --list_installed`) to check versions. The scripts use SDK tools already installed on your machine; they do not download them.
 
-Inspired by the [r/FacebookPortal](https://www.reddit.com/r/FacebookPortal/) community and built with AI-assisted development (Codex, Claude Code, GitHub Copilot).
+## Build without a device
 
----
-
-## ✨ Features
-
-### 🎛️ Dashboard & Controls (9 Touch-Friendly Tiles)
-
-| Control | Function | Details |
-|---------|----------|---------|
-| **🎤 Microphone** | Mute/Unmute All Mics | Reads actual Windows Core Audio states; handles mixed states; updates live if changed externally |
-| **📧 Outlook** | Launch Outlook | Opens installed Outlook app (resolves via App ID, not hardcoded path) |
-| **💬 Teams** | Launch Microsoft Teams | Opens installed Teams app |
-| **🌐 Chrome** | Launch Google Chrome | Opens installed Chrome browser |
-| **🔷 Edge** | Launch Microsoft Edge | Opens installed Edge browser |
-| **▶️ YouTube** | Open YouTube | Opens `youtube.com` in default browser |
-| **⌨️ Terminal** | Launch Windows Terminal | Opens installed Windows Terminal |
-| **📷 Camera** | Toggle Teams Camera | Uses Windows UI Automation to target Teams meeting camera control specifically |
-| **🔒 Lock PC** | Lock Windows Session | Uses supported Windows lock API (no sign out/shutdown/sleep) |
-
-### 🖥️ Windows Companion App
-
-- **C#/.NET Tray Application** - Runs in user session, no admin rights required
-- **Loopback HTTP Service** - `127.0.0.1:8731` with ADB reverse forwarding
-- **Auto-repairing ADB Tunnel** - Recovers automatically after USB reconnects
-- **Security First**:
-  - Cryptographically random pairing token
-  - Origin validation
-  - POST-only actions
-  - No credentials/tokens in source, logs, or browser history
-  - LAN/Internet exposure explicitly prevented
-- **Tray Menu** - Open dashboard locally, reconnect Portal, exit
-- **Per-user startup shortcut** - Auto-starts on Windows sign-in
-
-### 📱 Android App (Portal)
-
-- **WebView Shell** - Lightweight wrapper around the web dashboard
-- **Minimal Permissions** - Only requests what's actually needed
-- **Restricted Navigation** - Locked to companion service only
-- **Secure Configuration**:
-  - Cleartext HTTP limited to loopback host only
-  - Unnecessary file/content access disabled
-- **Persistence** - Pairing survives app restarts
-- **Offline/Waiting Screen** - Shows status when disconnected
-- **Auto-reconnect** - Automatically restores connection
-
----
-
-## 🏗️ Architecture
-
-```
-┌─────────────────────┐     USB/ADB      ┌──────────────────────┐
-│   Meta Portal       │ ◄──────────────► │    Windows PC        │
-│   (Android 9+)      │   Reverse Tunnel │   (Windows 10/11)    │
-│                     │                  │                      │
-│  ┌───────────────┐  │   127.0.0.1:8731 │  ┌────────────────┐  │
-│  │  WebView App  │  │ ◄──────────────► │  │ .NET Tray App  │  │
-│  │  (Dashboard)  │  │   HTTP + Token   │  │  (Companion)   │  │
-│  └───────────────┘  │                  │  └────────────────┘  │
-│       ▲             │                  │         ▲            │
-│       │ Touch       │                  │         │ System     │
-│       └─────────────┘                  │         │ APIs       │
-│                                         │  ┌──────┴──────┐    │
-│  1280×800 Landscape                     │  │ Core Audio  │    │
-│  Dark Theme, Large Tiles                │  │ UI Auto     │    │
-│  Keep Screen Awake                      │  │ Process     │    │
-└─────────────────────┘                  └────────────────┘
-```
-
----
-
-## 📋 Requirements
-
-### Hardware
-- **Meta/Facebook Portal** (any model: Portal, Portal+, Portal Mini, Portal Go, Portal TV)
-- **Windows PC** (Windows 10/11, x64 or ARM64)
-- **USB-C Cable** (data-capable, not charge-only)
-
-### Software
-- **ADB** (Android Debug Bridge) - Included in `platform-tools`
-- **.NET 8 SDK** (for Windows companion)
-- **Android SDK** (for APK building)
-- **Java 17+** (for Android build tools)
-
-### Portal Setup
-1. Enable **Developer Options**: Settings → About → Tap "Build Number" 7 times
-2. Enable **USB Debugging**: Settings → Developer Options → USB Debugging
-3. Connect via USB-C, authorize the ADB connection on the Portal
-
----
-
-## 🚀 Quick Start
-
-### 1. Clone & Setup
+On Windows, place the checkout in `$HOME/PortalDeck` so the Startup shortcut has a stable target. For a fresh clone:
 
 ```powershell
-# Navigate to your user profile
-cd $env:USERPROFILE
-
-# Clone the repository
-git clone https://github.com/dkn91/PortalDECK.git
-cd PortalDECK
+git clone https://github.com/dkn91/PortalDECK.git "$HOME/PortalDeck"
+Set-Location "$HOME/PortalDeck"
 ```
 
-### 2. Build Everything
+From the repository root in PowerShell:
 
 ```powershell
-# Build Windows companion, Android APK, and web assets
-.\Build.ps1
+./Build.ps1
 ```
 
-This script:
-- Inspects installed compilers/SDKs
-- Downloads verified portable tooling if needed
-- Builds the C# Windows companion
-- Builds and signs the Android APK
-- Packages web dashboard assets
+This publishes a self-contained `artifacts/windows/PortalDeck.exe` for the host OS architecture (Windows x64, arm64, or x86) and builds `artifacts/android/PortalDeck.apk`. There is no Gradle or Android Studio requirement. Android builds use `aapt2`, `javac`, `d8`, `zipalign`, and `apksigner`; the script verifies the signed and aligned APK. The defaults are compile SDK 35, min SDK 24, and target SDK 28. To use another installed platform or Build Tools version, pass `-CompileSdk`, `-TargetSdk` (at least 28 and no higher than the compile SDK), or `-BuildToolsVersion`.
 
-### 3. Deploy to Portal
+For Android-only builds on Linux or Windows, use `-SkipWindows`. For example, on a Linux runner with the SDK installed at `/usr/local/lib/android/sdk`:
+
+```sh
+pwsh -NoProfile -File ./Build.ps1 -SkipWindows -AndroidSdkRoot /usr/local/lib/android/sdk
+```
+
+Use `./Build.ps1 -SkipAndroid` for a Windows-only build. The Android signing key and its generated password live under `artifacts/android/` and are excluded from Git. Keep them private and keep them together: subsequent builds reuse that key so `adb install -r` can update the app. If you lose the key, uninstalling the old app before redeploying will clear its app data and pairing token.
+
+## Deploy and pair over USB
+
+Close any running PortalDeck Windows companion before rebuilding its executable or redeploying. Once both artifacts exist, run the following **on Windows as the account that will use PortalDeck** (no administrator shell needed):
 
 ```powershell
-# Install APK, establish ADB reverse tunnel, pair, wake Portal, launch dashboard
-.\Deploy.ps1
+./Deploy.ps1
 ```
 
-### 4. Run Tests
+Connect exactly one authorized physical device. To assert which device is selected, pass `-Serial <usb-serial>`. `-AdbPath` lets you specify an official Platform Tools installation. Otherwise Deploy checks `%USERPROFILE%\Downloads\platform-tools-latest-windows\platform-tools\adb.exe` first, then the SDK's `platform-tools` directory and `PATH`. Keep the rest of the extracted Platform Tools files next to `adb.exe`.
 
-```powershell
-# Validate authentication, app launches, microphone, camera, lock, etc.
-.\Test.ps1
-```
+Deploy compares `adb -d get-serialno` with the authorized row in `adb devices -l` and pins the device's transport ID when available; it does not select a Wi-Fi/TCP device or honor environment settings for a remote ADB server. If authorization fails, unlock the Portal, accept its USB debugging prompt, and retry. The script checks the API and ABI, installs or updates `app.portaldeck`, and sets up `adb reverse tcp:8731 tcp:8731`.
 
----
+The Windows companion's `--prepare` mode prepares the pairing token, HTTPS certificate and `companion-pin` in `%LOCALAPPDATA%\PortalDeck`. The pin is the SHA-256 digest of the DER-encoded certificate, stored as exactly 64 uppercase ASCII hex characters. Deploy streams the token and pin separately over non-interactive adb stdin to the Android app's private `files/pairing-token` and `files/companion-pin`; neither value is passed as an argument or printed.
 
-## 📁 Project Structure
+Deploy writes `%LOCALAPPDATA%\PortalDeck\device.json` with `adbPath` and `serial`, launches the companion, and waits up to 20 seconds for it to signal a per-launch Windows event after the listeners start. The check makes no HTTP request and does not send the pairing token. If the companion is not ready, Deploy fails without starting the Android app or creating a new Startup shortcut. On success it wakes and starts `app.portaldeck.MainActivity` to reload pairing, then creates the current user's `PortalDeck.lnk`. Keep the executable in place for the Startup shortcut to work.
 
-```
-%USERPROFILE%\PortalDeck\
-├── src/
-│   ├── windows/           # C# .NET Windows Companion
-│   │   ├── PortalDeck.Companion/
-│   │   │   ├── Services/
-│   │   │   │   ├── AudioService.cs      # Core Audio microphone control
-│   │   │   │   ├── AppLauncherService.cs # Resolve & launch apps
-│   │   │   │   ├── CameraService.cs     # UI Automation for Teams camera
-│   │   │   │   ├── LockService.cs       # Windows lock API
-│   │   │   │   └── PairingService.cs    # Token validation, origin check
-│   │   │   ├── TrayApp.cs               # System tray with menu
-│   │   │   └── Program.cs               # Entry point, HTTP server
-│   │   └── PortalDeck.Companion.csproj
-│   │
-│   ├── android/           # Android WebView App
-│   │   ├── app/
-│   │   │   ├── src/main/
-│   │   │   │   ├── java/com/portaldeck/
-│   │   │   │   │   ├── MainActivity.kt
-│   │   │   │   │   ├── PortalWebViewClient.kt
-│   │   │   │   │   └── PairingManager.kt
-│   │   │   │   ├── res/
-│   │   │   │   │   ├── layout/activity_main.xml
-│   │   │   │   │   ├── values/strings.xml
-│   │   │   │   │   └── xml/network_security_config.xml
-│   │   │   │   └── AndroidManifest.xml
-│   │   │   └── build.gradle.kts
-│   │   ├── build.gradle.kts
-│   │   └── settings.gradle.kts
-│   │
-│   └── web/               # Dashboard Web Assets
-│       ├── index.html
-│       ├── styles.css
-│       ├── app.js
-│       ├── icons/         # SVG icons for each control
-│       └── manifest.json
-│
-├── tools/                 # Downloaded tooling (excluded from git)
-│   ├── platform-tools/    # ADB
-│   ├── dotnet/            # .NET SDK (if portable)
-│   └── android-sdk/       # Android SDK (if portable)
-│
-├── keys/                  # Generated signing keys (excluded from git)
-│   ├── portal-deck.keystore
-│   └── pairing-token.txt
-│
-├── bin/                   # Build outputs (excluded from git)
-│   ├── win/
-│   └── android/
-│
-├── Build.ps1              # Build script
-├── Deploy.ps1             # Deploy script
-├── Test.ps1               # Test/validation script
-├── .gitignore
-├── LICENSE
-└── README.md
-```
+**Trust boundary:** The Android APK is debuggable solely to allow `adb run-as` to provision its private token and pin over USB. An authorized debugging host can read or change all app-private data, attach a debugger, and exercise other ADB capabilities. Backups and WebView debugging are disabled. Only authorize a PC you trust, do not enable wireless debugging for this deployment, and keep the APK for local use. Keep the pairing token, certificate and private key, and Android signing material out of Git. If the companion certificate changes, redeploy over trusted USB to provision the new pin.
 
----
+The Android dashboard uses pinned HTTPS at `https://127.0.0.1:8731` through the USB reverse mapping. The Android app checks the companion certificate against the provisioned pin; it does not install a system trust certificate. For the browser on the Windows PC, use `http://127.0.0.1:8732`; this separate listener is local-only and is not forwarded to the Portal. The dashboard rejects redirected action requests and blocks off-origin requests and frames.
 
-## 🔧 Configuration
+To pair the local browser, select **Open dashboard** from the PortalDeck tray icon, then select **Pairing** to open the **Pair this browser** form. Open `%LOCALAPPDATA%\PortalDeck\pairing-token` in a local text editor, type its value into the form, and select **Connect**. Avoid displaying the token in a console, putting it in a URL, or copying it into clipboard history.
 
-### Windows Companion (`appsettings.json`)
+## Verify and remove
 
-```json
-{
-  "Http": {
-    "Port": 8731,
-    "Host": "127.0.0.1"
-  },
-  "Pairing": {
-    "TokenLength": 32,
-    "RequireHttps": false,
-    "AllowedOrigins": ["http://127.0.0.1:8731"]
-  },
-  "Adb": {
-    "Path": "%USERPROFILE%\\Downloads\\platform-tools-latest-windows\\platform-tools\\adb.exe",
-    "ReversePort": 8731
-  },
-  "Startup": {
-    "CreateShortcut": true
-  }
-}
-```
-
-### Android App (`network_security_config.xml`)
-
-```xml
-<network-security-config>
-  <domain-config cleartextTrafficPermitted="true">
-    <domain includeSubdomains="false">127.0.0.1</domain>
-  </domain-config>
-  <base-config cleartextTrafficPermitted="false" />
-</network-security-config>
-```
-
----
-
-## 🎮 Usage
-
-### Dashboard Layout
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│  🕐 14:32                    ● Connected                     │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│      ┌─────────────┐                                       │
-│      │   🎤 MIC    │  ← Prominent, full-width              │
-│      │  LIVE/MUTED │                                       │
-│      └─────────────┘                                       │
-│                                                             │
-│  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐          │
-│  │ 📧Outlook│ │ 💬Teams │ │ 🌐Chrome│ │ 🔷Edge  │          │
-│  └─────────┘ └─────────┘ └─────────┘ └─────────┘          │
-│                                                             │
-│  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐          │
-│  │ ▶️YouTube│ │ ⌨️Term  │ │ 📷Cam   │ │ 🔒Lock  │          │
-│  └─────────┘ └─────────┘ └─────────┘ └─────────┘          │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### Tray Menu (Windows)
-
-Right-click the PortalDECK tray icon for:
-- **Open Dashboard** - Launch local web view
-- **Reconnect Portal** - Re-establish ADB tunnel
-- **Show Pairing Token** - Display current token (for manual pairing)
-- **Exit** - Stop companion service
-
----
-
-## 🔒 Security Model
-
-| Layer | Protection |
-|-------|------------|
-| **Transport** | USB-only via ADB reverse tunnel (no network exposure) |
-| **Authentication** | Cryptographically random 256-bit pairing token |
-| **Authorization** | Origin validation + POST-only mutating endpoints |
-| **Input Validation** | Allowlisted actions only (no arbitrary command execution) |
-| **Token Storage** | Never in source, logs, browser history, or committed files |
-| **Permissions** | Android app requests minimum required permissions |
-
----
-
-## 🧪 Testing
-
-The `Test.ps1` script validates:
-
-- ✅ Authentication & cross-origin rejection
-- ✅ App launch commands (Outlook, Teams, Chrome, Edge, Terminal, YouTube)
-- ✅ Malformed request handling
-- ✅ **Microphone**: Actual mute/unmute, mixed states, external change detection, state restoration
-- ✅ **Camera**: Teams meeting detection, UI Automation invocation, no-meeting fallback
-- ✅ **Lock PC**: Windows lock API (tested last - interrupts session)
-- ✅ Portal touch rendering & button coordinates
-- ✅ App restart pairing persistence
-- ✅ USB tunnel recovery after disconnect/reconnect
-- ✅ Companion responsiveness
-- ✅ Windows sign-in startup shortcut
-
-> **Note**: Camera toggle testing does NOT join/create real Teams meetings. The "no meeting available" behavior is explicitly tested. Lock testing is performed last as it locks the workstation.
-
----
-
-## ⚠️ Limitations & Known Issues
-
-| Limitation | Details |
-|------------|---------|
-| **USB Required** | Portal must remain connected via USB-C for operation |
-| **Teams Camera** | Requires Teams meeting/pre-join screen open; uses UI Automation (may break on Teams updates) |
-| **Microphone** | Controls all recording endpoints globally; cannot target individual devices |
-| **ARM64 Windows** | Tested but less common; ensure .NET 8 ARM64 SDK available |
-| **Portal Models** | Developed for 1280×800 displays; other resolutions may need CSS adjustments |
-| **No Wi-Fi Mode** | Architecture is USB-first; Wi-Fi ADB not supported in this version |
-
----
-
-## 🛠️ Development
-
-### Prerequisites
-
-```powershell
-# Install .NET 8 SDK
-winget install Microsoft.DotNet.SDK.8
-
-# Install Android SDK (via Android Studio or command line tools)
-# Set ANDROID_HOME environment variable
-
-# Install Java 17+
-winget install EclipseAdoptium.Temurin.17.JDK
-```
-
-### Building Manually
-
-```powershell
-# Windows Companion
-cd src/windows/PortalDeck.Companion
-dotnet publish -c Release -r win-x64 --self-contained true -o ../../../bin/win
-
-# Android APK
-cd src/android
-./gradlew assembleRelease
-# Output: app/build/outputs/apk/release/app-release.apk
-```
-
-### Adding New Controls
-
-1. Add button to `src/web/index.html` (grid layout)
-2. Add icon to `src/web/icons/`
-3. Add handler in `src/web/app.js`
-4. Add endpoint in Windows Companion (`Services/`)
-5. Update pairing allowlist if needed
-6. Add test case in `Test.ps1`
-
----
-
-## 📦 Deployment Checklist
-
-- [ ] Portal USB debugging enabled & authorized
-- [ ] ADB detects device: `adb devices -l`
-- [ ] Windows Companion running (tray icon visible)
-- [ ] ADB reverse tunnel established: `adb reverse tcp:8731 tcp:8731`
-- [ ] APK installed on Portal: `adb install -r bin/android/app-release.apk`
-- [ ] Pairing completed (token validated)
-- [ ] Dashboard launched on Portal
-- [ ] All 9 controls tested
-- [ ] Startup shortcut created
-- [ ] USB cable secured
-
----
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature/amazing-feature`
-3. Commit changes: `git commit -m 'Add amazing feature'`
-4. Push to branch: `git push origin feature/amazing-feature`
-5. Open a Pull Request
-
----
-
-## 📄 License
-
-MIT License - see [LICENSE](LICENSE) for details.
-
----
-
-## 🙏 Acknowledgments
-
-- **r/FacebookPortal** community for inspiration and ADB unlocking guidance
-- **Meta** for enabling ADB on Portal devices (2026)
-- **Open Source Projects**:
-  - [Immortal](https://github.com/starbrightlab/immortal) - Portal launcher & app store
-  - [unmetaportal](https://github.com/fcjr/unmetaportal) - Portal conversion scripts
-  - [PortalOverlays](https://github.com/GodricTM/PortalOverlays) - Floating HUD
-  - [openportal](https://github.com/andronedev/openportal) - Browser-based Portal management
-- **AI Coding Assistants**: Codex, Claude Code, GitHub Copilot for accelerated development
-
----
-
-## 📞 Support
-
-- **Issues**: [GitHub Issues](https://github.com/dkn91/PortalDECK/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/dkn91/PortalDECK/discussions)
-- **Community**: [r/FacebookPortal](https://www.reddit.com/r/FacebookPortal/)
-
----
-
-## 🔗 Related Projects
-
-| Project | Description |
-|---------|-------------|
-| [Immortal](https://github.com/starbrightlab/immortal) | Custom launcher, photo frame, app store for Portal |
-| [unmetaportal](https://github.com/fcjr/unmetaportal) | De-Facebooking & repurposing scripts |
-| [PortalOverlays](https://github.com/GodricTM/PortalOverlays) | Floating HUD with back/home/recent buttons |
-| [openportal](https://github.com/andronedev/openportal) | Browser-based Portal management via WebUSB |
-| [portal-toolkit](https://github.com/jurax-sys/portal-toolkit) | Android app for Portal ADB management |
-
----
-
-> **⚡ Pro Tip**: Keep the USB-C cable connected at all times for operation. The ADB reverse tunnel provides near-zero latency compared to Wi-Fi solutions.
-
----
-
-*Built with ❤️ for the Portal hacking community. Give your Portal a second life as a powerful PC controller!*
+- `./Test.ps1` runs the standard checks. Use `./Test.ps1 -Hardware` on Windows for checks that require a connected and paired Portal. Add `-LockLast` to include the Windows lock check last; be prepared to unlock the PC afterward.
+- On the Portal, confirm the dashboard fills the landscape screen and responds to taps at the center and near the edges of tiles across the top and bottom rows. Check that the microphone button reflects the PC's state and that each launch tile opens the intended app or page on the PC. Leave the Lock tile until last.
+- Exit and restart the Android app to verify pairing persists. With the companion still running, unplug USB and verify the dashboard reports the lost connection without accepting actions. Reconnect the same authorized Portal and check that the dashboard recovers without redeploying. Sign out of Windows and sign in again to confirm the companion starts via the Startup shortcut and the dashboard reconnects.
+- Camera controls the **Windows Teams meeting camera**, not the Portal camera or the system-wide camera. Test that it reports unavailable with no meeting or pre-join window. In a supported Teams meeting/pre-join window, verify a tap changes the camera indicator and tap again to restore the prior state. It only acts when it can identify a single camera control and verify its state; client updates, UI language, or multiple meeting windows can make the control unavailable.
+- If an update fails with a signing mismatch, use your previous signing material or uninstall `app.portaldeck` and deploy again to re-pair.
+- To remove the installation, exit the Windows companion, delete the `PortalDeck.lnk` shortcut from `shell:startup` and remove `%LOCALAPPDATA%\PortalDeck` if you no longer want the local pairing. With only the intended USB device connected, run `adb -d reverse --remove tcp:8731` and `adb -d uninstall app.portaldeck`. Disable USB debugging or revoke USB debugging authorizations on the Portal if no longer needed.
