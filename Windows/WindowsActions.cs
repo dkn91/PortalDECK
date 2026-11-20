@@ -609,7 +609,7 @@ internal static class WindowsActions
         [PreserveSig] int EnumAudioEndpoints(int dataFlow, uint stateMask, out IMMDeviceCollection devices);
     }
 
-    [ComImport, Guid("0BD7A1BE-7A1A-44DB-8397-C0A02B3A7445"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    [ComImport, Guid("0BD7A1BE-7A1A-44DB-8397-CC5392387B5E"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     private interface IMMDeviceCollection
     {
         [PreserveSig] int GetCount(out int count);
