@@ -1,5 +1,6 @@
 using System.Net;
 using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
@@ -13,15 +14,15 @@ namespace PortalDeck;
 internal static class DeckServer
 {
     public const int Port = 8731;
-    public const string Host = "127.0.0.1:8731";
-    public const string Origin = "http://" + Host;
+    public const int LocalPort = 8732;
+    public const string LocalOrigin = "http://127.0.0.1:8732";
     private static readonly HashSet<string> Actions = new(StringComparer.Ordinal)
     {
         "mic", "outlook", "teams", "chrome", "edge", "youtube", "terminal", "camera", "lock"
     };
 
     public static WebApplication Create(string token, Func<object> state, Func<string, ActionResult> run,
-        int port = Port)
+        X509Certificate2 certificate, int localPort = LocalPort, int usbPort = Port)
     {
         var expected = Encoding.ASCII.GetBytes("Bearer " + token);
         var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions
@@ -33,7 +34,8 @@ internal static class DeckServer
         builder.Logging.ClearProviders();
         builder.WebHost.ConfigureKestrel(server =>
         {
-            server.Listen(IPAddress.Loopback, port);
+            server.Listen(IPAddress.Loopback, localPort);
+            server.Listen(IPAddress.Loopback, usbPort, listen => listen.UseHttps(certificate));
             server.AddServerHeader = false;
             server.Limits.MaxRequestBodySize = 512;
             server.Limits.RequestHeadersTimeout = TimeSpan.FromSeconds(5);
@@ -45,7 +47,7 @@ internal static class DeckServer
             var request = context.Request;
             var response = context.Response;
             var host = $"127.0.0.1:{context.Connection.LocalPort}";
-            var origin = $"http://{host}";
+            var origin = $"{request.Scheme}://{host}";
             response.Headers.CacheControl = "no-store";
             response.Headers.XContentTypeOptions = "nosniff";
             response.Headers["Referrer-Policy"] = "no-referrer";
@@ -63,11 +65,15 @@ internal static class DeckServer
             var path = request.Path.Value;
             var isState = path == "/api/state";
             var isAction = path == "/api/action";
+            // The pinned Android HTTP client is not a browser and uses a native marker.
+            var nativeUsb = request.IsHttps && !request.Headers.ContainsKey("Sec-Fetch-Site") &&
+                request.Headers.TryGetValue("X-PortalDeck-Native", out var native) &&
+                native.Count == 1 && native[0] == "1";
             if ((request.Headers.TryGetValue("Origin", out var origins) &&
                  (origins.Count != 1 || origins[0] != origin)) ||
                 (request.Headers.TryGetValue("Sec-Fetch-Site", out var sites) &&
                  (sites.Count != 1 || sites[0] != "same-origin" && sites[0] != "none")) ||
-                (isAction && HttpMethods.IsPost(request.Method) && origins.Count == 0))
+                (isAction && HttpMethods.IsPost(request.Method) && origins.Count == 0 && !nativeUsb))
             {
                 response.StatusCode = 403;
                 return;

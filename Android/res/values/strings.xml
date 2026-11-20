@@ -2,7 +2,8 @@
 <resources>
     <string name="app_name">PortalDECK</string>
     <string name="waiting_for_companion">Waiting for the PortalDECK companion…</string>
-    <string name="waiting_for_pairing">Waiting for a pairing token. Provision it from the companion setup, then retry.</string>
+    <string name="waiting_for_pairing">Waiting for a pairing token and companion certificate pin. Run companion setup, then retry.</string>
+    <string name="waiting_for_trusted_companion">Companion certificate verification failed. Check the companion and re-run setup if its certificate changed.</string>
     <string name="loading_dashboard">Loading the PortalDECK dashboard…</string>
     <string name="retry">Retry now</string>
 </resources>

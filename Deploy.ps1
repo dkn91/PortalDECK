@@ -130,11 +130,17 @@ $local = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Porta
 $prepared = Start-Process -FilePath $companion -ArgumentList '--prepare' -Wait -PassThru
 if ($prepared.ExitCode -ne 0) { throw "PortalDeck --prepare failed (exit $($prepared.ExitCode))." }
 $tokenPath = Join-Path $local 'pairing-token'
+$pinPath = Join-Path $local 'companion-pin'
 if (-not (Test-Path -LiteralPath $tokenPath -PathType Leaf)) { throw 'PortalDeck --prepare did not create its pairing-token file.' }
+if (-not (Test-Path -LiteralPath $pinPath -PathType Leaf)) { throw 'PortalDeck --prepare did not create its companion-pin file.' }
 $token = [IO.File]::ReadAllBytes($tokenPath)
 try {
+    $pin = [IO.File]::ReadAllBytes($pinPath)
     if ($token.Length -ne 64 -or [Text.Encoding]::Latin1.GetString($token) -notmatch '\A[0-9a-f]{64}\z') {
         throw 'PortalDeck produced an invalid ASCII pairing-token file.'
+    }
+    if ($pin.Length -ne 64 -or [Text.Encoding]::Latin1.GetString($pin) -cnotmatch '\A[0-9A-F]{64}\z') {
+        throw 'PortalDeck produced an invalid ASCII companion-pin file.'
     }
     Confirm-SelectedUsb
     $null = Invoke-Adb -ToolArguments ($transport + @('install', '-r', $apk)) -Operation 'Installing PortalDeck APK'
@@ -144,12 +150,45 @@ try {
     Confirm-SelectedUsb
     Invoke-Adb -ToolArguments ($transport + @('shell', '-T', "run-as $package sh -c 'umask 077; cat > files/pairing-token'")) `
         -Operation 'Provisioning app-private pairing token' -InputBytes $token
+    Confirm-SelectedUsb
+    Invoke-Adb -ToolArguments ($transport + @('shell', '-T', "run-as $package sh -c 'umask 077; cat > files/companion-pin'")) `
+        -Operation 'Provisioning app-private companion certificate pin' -InputBytes $pin
+
 } finally {
     [Array]::Clear($token, 0, $token.Length)
 }
 
 $config = @{ adbPath = $adb; serial = $Serial } | ConvertTo-Json -Compress
 [IO.File]::WriteAllText((Join-Path $local 'device.json'), $config)
+$readyId = [guid]::NewGuid().ToString('N')
+$created = $false
+$ready = [Threading.EventWaitHandle]::new($false, [Threading.EventResetMode]::ManualReset,
+    "Local\PortalDeck.Ready.$readyId", [ref]$created)
+try {
+    if (-not $created) { throw 'Could not create a unique PortalDeck readiness event.' }
+    $process = Start-Process -FilePath $companion -ArgumentList '--ready', $readyId `
+        -WorkingDirectory (Split-Path -Parent $companion) -PassThru
+    try {
+        $signaled = $ready.WaitOne([TimeSpan]::FromSeconds(20))
+        if ($process.HasExited) {
+            throw "PortalDeck exited during startup (exit $($process.ExitCode))."
+        }
+        if (-not $signaled) {
+            throw 'PortalDeck did not signal readiness within 20 seconds. Check whether ports 8731 and 8732 are in use.'
+        }
+    } finally {
+        $process.Dispose()
+    }
+} finally {
+    $ready.Dispose()
+}
+
+Confirm-SelectedUsb
+$null = Invoke-Adb -ToolArguments ($transport + @('shell', 'am', 'force-stop', $package)) -Operation 'Stopping PortalDeck Android app'
+$null = Invoke-Adb -ToolArguments ($transport + @('shell', 'input', 'keyevent', 'KEYCODE_WAKEUP')) -Operation 'Waking Portal screen'
+$started = Invoke-Adb -ToolArguments ($transport + @('shell', 'am', 'start', '-W', '-n', "$package/.MainActivity")) -Operation 'Starting PortalDeck Android app'
+if ($started -notmatch '(?m)^Status:\s*ok\s*$') { throw "PortalDeck Android app did not report a successful launch. $started" }
+
 $startup = [Environment]::GetFolderPath('Startup')
 if (-not $startup) { throw 'Could not locate the current user Startup folder.' }
 $null = New-Item -ItemType Directory -Path $startup -Force
@@ -158,11 +197,4 @@ $shortcut = $shell.CreateShortcut((Join-Path $startup 'PortalDeck.lnk'))
 $shortcut.TargetPath = $companion
 $shortcut.WorkingDirectory = Split-Path -Parent $companion
 $shortcut.Save()
-
-Start-Process -FilePath $companion -WorkingDirectory (Split-Path -Parent $companion)
-Confirm-SelectedUsb
-$null = Invoke-Adb -ToolArguments ($transport + @('shell', 'am', 'force-stop', $package)) -Operation 'Stopping PortalDeck Android app'
-$null = Invoke-Adb -ToolArguments ($transport + @('shell', 'input', 'keyevent', 'KEYCODE_WAKEUP')) -Operation 'Waking Portal screen'
-$started = Invoke-Adb -ToolArguments ($transport + @('shell', 'am', 'start', '-W', '-n', "$package/.MainActivity")) -Operation 'Starting PortalDeck Android app'
-if ($started -notmatch '(?m)^Status:\s*ok\s*$') { throw "PortalDeck Android app did not report a successful launch. $started" }
 Write-Host 'PortalDeck paired and launched. Startup shortcut installed for the current Windows user.'

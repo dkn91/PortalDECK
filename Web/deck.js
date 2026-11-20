@@ -23,6 +23,8 @@
   var resultTimer;
   var online = false;
   var validatingManual = false;
+  var nativeBridge = window.PortalNative;
+  var nativeMode = !!(nativeBridge && typeof nativeBridge.sendAction === 'function');
 
   function updateControls() {
     for (var i = 0; i < actions.length; i++) {
@@ -30,7 +32,7 @@
       if (activeAction) actions[i].setAttribute('aria-disabled', 'true');
       else actions[i].removeAttribute('aria-disabled');
     }
-    field.disabled = submit.disabled = validatingManual || !window.fetch;
+    field.disabled = submit.disabled = nativeMode || validatingManual || !window.fetch;
   }
 
   function status(label, tone) {
@@ -69,6 +71,7 @@
   }
 
   function showPairing(note) {
+    if (nativeMode) return;
     pairing.hidden = false;
     manage.setAttribute('aria-expanded', 'true');
     pairStatus.textContent = note || '';
@@ -122,12 +125,13 @@
     var controller = window.AbortController ? new window.AbortController() : null;
     var options = {
       method: action ? 'POST' : 'GET',
-      headers: { Authorization: 'Bearer ' + token },
+      headers: {},
       mode: 'same-origin',
       redirect: 'error',
       cache: 'no-store',
       credentials: 'omit'
     };
+    if (!nativeMode) options.headers.Authorization = 'Bearer ' + token;
     if (action) {
       options.headers['Content-Type'] = 'application/json';
       options.body = JSON.stringify({ action: action });
@@ -164,17 +168,23 @@
   }
 
   function refreshState() {
-    if (!token || stateRequest || activeAction || !window.fetch) return;
+    if ((!nativeMode && !token) || stateRequest || activeAction || !window.fetch) return;
     stateRequest = request('/api/state', null, function (code, data) {
       stateRequest = null;
-      if (code === 401) return rejectToken();
+      if (code === 401) {
+        if (!nativeMode) return rejectToken();
+        status('Offline', 'offline');
+        renderMic(null);
+        announce('Pairing rejected. Check pairing in the Android app.', 'failure');
+        return;
+      }
       var manual = validatingManual;
       validatingManual = false;
       if (code >= 200 && code < 300 && data && typeof data.state === 'string') {
         var wasOnline = online;
         status('Online', 'online');
         renderMic(data);
-        if (!wasOnline && feedback.getAttribute('data-tone') !== 'failure') {
+        if (!wasOnline) {
           announce('Connected. Tap an action to control your desktop.');
         }
         if (manual) hidePairing();
@@ -193,7 +203,7 @@
 
   function runAction(event) {
     var tile = event.currentTarget;
-    if (tile.disabled || !token || !online || activeAction) return;
+    if (tile.disabled || (!nativeMode && !token) || !online || activeAction) return;
     var action = tile.getAttribute('data-action');
     var label = tile.querySelector('strong').textContent;
     if (stateRequest) {
@@ -204,7 +214,7 @@
     mark(tile, 'pending');
     announce('Sending ' + label + '…');
     updateControls();
-    request('/api/action', action, function (code, data) {
+    function complete(code, data) {
       activeAction = null;
       if (code === 401) return rejectToken();
       var reported = data && typeof data.ok === 'boolean';
@@ -219,27 +229,29 @@
           : label + ' failed.'), ok ? 'success' : 'failure');
       updateControls();
       refreshState();
-    });
+    }
+
+    if (!nativeMode) {
+      request('/api/action', action, complete);
+      return;
+    }
+    // The native interface is synchronous, so let WebView paint pending feedback first.
+    function sendNative() {
+      var data;
+      try { data = JSON.parse(nativeBridge.sendAction(action)); }
+      catch (error) { return complete(0, null); }
+      complete(200, data);
+    }
+    if (window.requestAnimationFrame) {
+      window.requestAnimationFrame(function () { window.requestAnimationFrame(sendNative); });
+    } else {
+      window.setTimeout(sendNative, 32);
+    }
   }
 
   function cleanToken(value) {
     value = typeof value === 'string' ? value.trim() : '';
     return /^[0-9a-f]+$/i.test(value) ? value : '';
-  }
-
-  function readNativePairing() {
-    var bridge = window.PortalPairing;
-    var provided;
-    try { provided = bridge && typeof bridge.token === 'function' && cleanToken(bridge.token()); }
-    catch (error) { return false; }
-    if (!provided || !window.fetch) return false;
-    if (provided !== token) {
-      setSession(provided, false);
-      hidePairing();
-      announce('Connecting to your desktop…');
-      refreshState();
-    }
-    return true;
   }
 
   byId('pair-form').addEventListener('submit', function (event) {
@@ -278,12 +290,16 @@
     }
   });
   for (var i = 0; i < actions.length; i++) actions[i].addEventListener('click', runAction);
-  window.addEventListener('portal-pairing-ready', readNativePairing);
   window.addEventListener('online', refreshState);
   window.setInterval(refreshState, 3000);
+  manage.hidden = nativeMode;
   updateControls();
-  if (!readNativePairing() && !window.fetch) {
+  if (!window.fetch) {
     announce('Update the browser or WebView to connect.', 'failure');
+  } else if (nativeMode) {
+    status('Connecting', 'connecting');
+    announce('Connecting to your desktop…');
+    refreshState();
   }
 
   var clock = byId('clock');

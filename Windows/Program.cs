@@ -23,6 +23,8 @@ internal static class Program
             if (prepare)
             {
                 LoadToken();
+                using var pairingCertificate = CompanionCertificate.Load(Data);
+                File.WriteAllText(Path.Combine(Data, "companion-pin"), CompanionCertificate.Pin(pairingCertificate), Encoding.ASCII);
                 return 0;
             }
             if (testCamera || testMicrophones)
@@ -32,11 +34,19 @@ internal static class Program
                 File.WriteAllText(Path.Combine(Data, name), JsonSerializer.Serialize(result));
                 return result.Ok ? 0 : 1;
             }
-            if (args.Length != 0) return 2;
+            string? readiness = null;
+            if (args is ["--ready", var id] && Guid.TryParseExact(id, "N", out var launchId))
+                readiness = @"Local\PortalDeck.Ready." + launchId.ToString("N");
+            else if (args.Length != 0)
+                return 2;
+
+            using var ready = readiness is null ? null : EventWaitHandle.OpenExisting(readiness);
             using var instance = new Mutex(true, @"Local\PortalDeck.Tray", out bool first);
             if (!first) return 0;
 
-            var server = DeckServer.Create(LoadToken(), WindowsActions.Microphones, WindowsActions.Run);
+            var token = LoadToken();
+            using var certificate = CompanionCertificate.Load(Data);
+            var server = DeckServer.Create(token, WindowsActions.Microphones, WindowsActions.Run, certificate);
             try
             {
                 server.StartAsync().GetAwaiter().GetResult();
@@ -46,6 +56,7 @@ internal static class Program
                 Forms.Application.EnableVisualStyles();
                 Forms.Application.SetCompatibleTextRenderingDefault(false);
                 using var tray = new Tray(tunnel);
+                ready?.Set();
                 Forms.Application.Run(tray);
             }
             finally
@@ -59,7 +70,7 @@ internal static class Program
         catch (Exception)
         {
             if (!prepare && !testMicrophones && !testCamera)
-                Forms.MessageBox.Show("The companion could not start or complete shutdown. Check the pairing file and whether port 8731 is in use.",
+                Forms.MessageBox.Show("The companion could not start or complete shutdown. Check the pairing files and whether ports 8731 or 8732 are in use.",
                     "PortalDeck", Forms.MessageBoxButtons.OK, Forms.MessageBoxIcon.Error);
             return 1;
         }
@@ -96,7 +107,7 @@ internal static class Program
         {
             menu.Items.Add("Open dashboard", null, (_, _) =>
             {
-                try { Process.Start(new ProcessStartInfo(DeckServer.Origin + "/") { UseShellExecute = true }); }
+                try { Process.Start(new ProcessStartInfo(DeckServer.LocalOrigin + "/") { UseShellExecute = true }); }
                 catch (System.ComponentModel.Win32Exception)
                 {
                     Forms.MessageBox.Show("Could not open the default browser.", "PortalDeck");

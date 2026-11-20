@@ -8,7 +8,7 @@ const source = readFileSync(join(__dirname, '../Web/deck.js'), 'utf8');
 const fixture = (0xdecaf).toString(16);
 
 function dashboard(nativeBridge) {
-  const elements = new Map(), pending = [], listeners = {}, intervals = new Map();
+  const elements = new Map(), pending = [], frames = [], intervals = new Map();
   function element(id) {
     if (!elements.has(id)) {
       const attributes = new Map(), events = {};
@@ -30,9 +30,10 @@ function dashboard(nativeBridge) {
   mic.setAttribute('data-action', 'mic');
   camera.setAttribute('data-action', 'camera');
   const window = {
-    PortalPairing: nativeBridge,
-    addEventListener: (type, cb) => { listeners[type] = cb; },
+    PortalNative: nativeBridge,
+    addEventListener() {},
     fetch: (path, options) => new Promise(resolve => pending.push({ path, options, resolve })),
+    requestAnimationFrame: cb => frames.push(cb),
     setInterval: (cb, delay) => intervals.set(delay, cb),
     setTimeout() {},
     clearTimeout() {}
@@ -40,11 +41,11 @@ function dashboard(nativeBridge) {
   runInNewContext(source, {
     window, document: { getElementById: element, querySelectorAll: () => [mic, camera] }
   });
-  async function respond(path, code, body, expectedToken = fixture, action) {
+  async function respond(path, code, body, expectedToken, action) {
     assert.ok(pending.length, 'expected an API request');
     const request = pending.shift();
     assert.equal(request.path, path);
-    assert.equal(request.options.headers.Authorization, 'Bearer ' + expectedToken);
+    assert.equal(request.options.headers.Authorization, expectedToken ? 'Bearer ' + expectedToken : undefined);
     assert.equal(request.options.redirect, 'error');
     assert.equal(request.options.mode, 'same-origin');
     assert.equal(request.options.method, action ? 'POST' : 'GET');
@@ -53,38 +54,45 @@ function dashboard(nativeBridge) {
     request.resolve({ status: code, json: () => Promise.resolve(body) });
     await new Promise(resolve => setImmediate(resolve));
   }
-  return { element, pending, listeners, mic, camera, respond, poll: intervals.get(3000), window };
+  return { element, pending, frames, mic, camera, respond, poll: intervals.get(3000) };
 }
 
-test('native startup pairs immediately, polls the real microphone state, and recovers after an outage', async () => {
-  const page = dashboard({ token: () => fixture });
+test('native startup polls without bearer, hides pairing, and recovers after an outage', async () => {
+  const page = dashboard({ sendAction() {} });
+  assert.equal(page.element('manage-pairing').hidden, true);
+  assert.equal(page.element('pair-token').disabled, true);
   await page.respond('/api/state', 200, { state: 'mixed', count: 2 });
   assert.equal(page.element('mic-state').textContent, 'Mixed');
   assert.equal(page.element('connection').textContent, 'Online');
   page.poll();
-  await page.respond('/api/state', 503, null);
+  await page.respond('/api/state', 401, null);
   assert.equal(page.element('mic-state').textContent, 'Unknown');
   assert.equal(page.element('connection').textContent, 'Offline');
   assert.equal(page.mic.disabled, true);
+  assert.equal(page.element('pairing').hidden, true);
   page.poll();
   await page.respond('/api/state', 200, { state: 'live', count: 2 });
   assert.equal(page.element('mic-state').textContent, 'Unmuted');
   assert.equal(page.mic.disabled, false);
 });
 
-test('late native readiness pairs once and HTTP 200 action failure does not set camera state', async () => {
-  const page = dashboard();
-  assert.equal(page.pending.length, 0);
-  page.window.PortalPairing = { token: () => fixture };
-  page.listeners['portal-pairing-ready']();
-  page.listeners['portal-pairing-ready']();
-  assert.equal(page.pending.length, 1);
+test('native actions wait for pending paint and never issue a browser POST', async () => {
+  const calls = [];
+  const page = dashboard({
+    sendAction(action) {
+      calls.push(action);
+      return JSON.stringify({ ok: false, message: 'Camera unavailable' });
+    }
+  });
   await page.respond('/api/state', 200, { state: 'muted', count: 1 });
   page.camera.emit('click');
   page.mic.emit('click');
-  assert.equal(page.pending.length, 1, 'suppresses overlapping actions');
+  assert.equal(page.pending.length, 0);
   assert.equal(page.camera.getAttribute('data-result'), 'pending');
-  await page.respond('/api/action', 200, { ok: false, message: 'Camera unavailable' }, fixture, 'camera');
+  page.frames.shift()();
+  assert.deepEqual(calls, []);
+  page.frames.shift()();
+  assert.deepEqual(calls, ['camera']);
   assert.equal(page.camera.getAttribute('data-result'), 'failure');
   assert.equal(page.camera.getAttribute('data-state'), null);
   assert.equal(page.element('feedback').textContent, 'Camera unavailable');
@@ -93,7 +101,7 @@ test('late native readiness pairs once and HTTP 200 action failure does not set 
   assert.equal(page.element('mic-state').textContent, 'Unavailable');
 });
 
-test('manual pairing clears the field and allows retry after HTTP 401', async () => {
+test('local browser retries manual pairing after 401 and uses bearer for state and action', async () => {
   const page = dashboard();
   const field = page.element('pair-token');
   const form = page.element('pair-form');
@@ -107,7 +115,16 @@ test('manual pairing clears the field and allows retry after HTTP 401', async ()
   assert.equal(page.pending.length, 0, 'does not poll with rejected token');
   field.value = fixture;
   form.emit('submit');
-  await page.respond('/api/state', 200, { state: 'muted', count: 1 });
+  await page.respond('/api/state', 200, { state: 'muted', count: 1 }, fixture);
   assert.equal(page.element('pairing').hidden, true);
   assert.equal(field.value, '');
+  page.mic.emit('click');
+  assert.equal(page.element('mic-state').textContent, 'Muted', 'does not guess result');
+  await page.respond('/api/action', 200, { ok: true, message: 'Done' }, fixture, 'mic');
+  await page.respond('/api/state', 200, { state: 'live', count: 1 }, fixture);
+  assert.equal(page.element('mic-state').textContent, 'Unmuted');
+  page.camera.emit('click');
+  await page.respond('/api/action', 200, { ok: false, message: 'Camera unavailable' }, fixture, 'camera');
+  assert.equal(page.element('feedback').textContent, 'Camera unavailable');
+  assert.equal(page.element('connection').textContent, 'Online');
 });

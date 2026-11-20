@@ -10,4 +10,6 @@
 *.keystore
 *.password
 pairing-token
+companion.pfx
+companion-pin
 device.json

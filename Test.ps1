@@ -28,7 +28,7 @@ if ($LASTEXITCODE -ne 0 -or -not ($mappings -match '^\S+\s+tcp:8731\s+tcp:8731\s
 }
 Write-Host 'Startup shortcut target and active USB reverse mapping checked. Actual sign-in startup is a manual check.'
 
-$origin = 'http://127.0.0.1:8731'
+$origin = 'http://127.0.0.1:8732'
 $pairing = [IO.File]::ReadAllText((Join-Path $data 'pairing-token'))
 $handler = [Net.Http.HttpClientHandler]::new()
 $handler.UseProxy = $false

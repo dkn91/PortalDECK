@@ -10,6 +10,7 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.WindowManager;
 import android.webkit.CookieManager;
+import android.webkit.JavascriptInterface;
 import android.webkit.RenderProcessGoneDetail;
 import android.webkit.ServiceWorkerClient;
 import android.webkit.ServiceWorkerController;
@@ -24,17 +25,18 @@ import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
-import org.json.JSONObject;
-
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+
+import javax.net.ssl.SSLException;
 
 public final class MainActivity extends Activity {
     private static final long RETRY_MS = 2500;
@@ -47,6 +49,7 @@ public final class MainActivity extends Activity {
     private View waiting;
     private TextView status;
     private WebView dashboard;
+    private DashboardClient dashboardClient;
     private boolean foreground;
     private boolean probing;
 
@@ -144,46 +147,68 @@ public final class MainActivity extends Activity {
         }
         ui.removeCallbacks(probeTask);
         probing = true;
-        boolean needsToken = dashboard == null;
+        DashboardClient current = dashboardClient;
         worker.execute(() -> {
-            String token = needsToken ? readToken() : null;
-            boolean ready = (!needsToken || token != null) && CompanionHttp.isReady();
-            ui.post(() -> {
-                probing = false;
-                if (!foreground) {
-                    return;
+            CompanionHttp companion = current != null ? current.companion : readProvisioning();
+            int message = R.string.waiting_for_pairing;
+            if (companion != null) {
+                try {
+                    message = companion.isReady() ? 0 : R.string.waiting_for_companion;
+                } catch (SSLException e) {
+                    message = R.string.waiting_for_trusted_companion;
+                } catch (IOException e) {
+                    message = R.string.waiting_for_companion;
                 }
-                if (!ready) {
-                    showWaiting(needsToken && token == null ? R.string.waiting_for_pairing
-                            : R.string.waiting_for_companion);
-                } else if (dashboard == null && token != null) {
-                    openDashboard(token);
-                }
-                ui.postDelayed(probeTask, RETRY_MS);
-            });
+            }
+            int result = message;
+            ui.post(() -> completeProbe(current, companion, result));
         });
     }
 
-    private String readToken() {
-        try (FileInputStream input = new FileInputStream(new File(getFilesDir(), "pairing-token"))) {
-            String token = new String(CompanionHttp.readLimited(input, MAX_TOKEN_BYTES),
-                    StandardCharsets.US_ASCII).trim();
-            if (token.isEmpty()) {
-                return null;
-            }
+    private void completeProbe(DashboardClient current, CompanionHttp companion, int message) {
+        probing = false;
+        if (!foreground) {
+            return;
+        }
+        if (message != 0) {
+            showWaiting(message);
+        } else if (current == null && dashboard == null) {
+            openDashboard(companion);
+        }
+        ui.postDelayed(probeTask, RETRY_MS);
+    }
+
+    private CompanionHttp readProvisioning() {
+        try {
+            String token = readPrivateAscii("pairing-token", MAX_TOKEN_BYTES);
             for (int i = 0; i < token.length(); i++) {
                 if (token.charAt(i) < '!' || token.charAt(i) > '~') {
                     return null;
                 }
             }
-            return token;
-        } catch (IOException e) {
+            String pin = readPrivateAscii("companion-pin", 128);
+            if (token.isEmpty() || !pin.matches("[0-9A-F]{64}")) {
+                return null;
+            }
+            byte[] fingerprint = new byte[32];
+            for (int i = 0; i < fingerprint.length; i++) {
+                fingerprint[i] = (byte) Integer.parseInt(pin.substring(i * 2, i * 2 + 2), 16);
+            }
+            return new CompanionHttp(token, fingerprint);
+        } catch (IOException | GeneralSecurityException e) {
             return null;
         }
     }
 
+    private String readPrivateAscii(String name, int limit) throws IOException {
+        try (FileInputStream input = new FileInputStream(new File(getFilesDir(), name))) {
+            return new String(CompanionHttp.readLimited(input, limit),
+                    StandardCharsets.US_ASCII).trim();
+        }
+    }
+
     @SuppressWarnings("deprecation")  // File URL controls still matter on older WebViews.
-    private void openDashboard(String token) {
+    private void openDashboard(CompanionHttp companion) {
         status.setText(R.string.loading_dashboard);
         waiting.setVisibility(View.VISIBLE);
         WebView view = new WebView(this);
@@ -203,6 +228,7 @@ public final class MainActivity extends Activity {
         settings.setSaveFormData(false);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         settings.setCacheMode(WebSettings.LOAD_NO_CACHE);
+        settings.setBlockNetworkLoads(true);
         settings.setMediaPlaybackRequiresUserGesture(true);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             view.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS);
@@ -210,7 +236,9 @@ public final class MainActivity extends Activity {
         }
         CookieManager.getInstance().setAcceptThirdPartyCookies(view, false);
         view.setDownloadListener((url, agent, disposition, mime, size) -> { });
-        view.setWebViewClient(new DashboardClient(token));
+        dashboardClient = new DashboardClient(companion);
+        view.setWebViewClient(dashboardClient);
+        view.addJavascriptInterface(new ActionBridge(dashboardClient), "PortalNative");
         content.addView(view, 0, fullScreen());
         view.loadUrl(CompanionHttp.ROOT_URL);
     }
@@ -229,6 +257,10 @@ public final class MainActivity extends Activity {
     private void removeDashboard() {
         WebView view = dashboard;
         dashboard = null;
+        if (dashboardClient != null) {
+            dashboardClient.active = false;
+            dashboardClient = null;
+        }
         if (view != null) {
             content.removeView(view);
             view.destroy();
@@ -255,17 +287,19 @@ public final class MainActivity extends Activity {
             headers.put("Content-Security-Policy", CompanionHttp.CSP);
             headers.put("X-Frame-Options", "DENY");
             headers.put("Referrer-Policy", "no-referrer");
+            headers.put("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
         }
         return new WebResourceResponse(mime, "UTF-8", status, status < 300 ? "OK" : "Rejected",
                 headers, new ByteArrayInputStream(body));
     }
 
     private final class DashboardClient extends WebViewClient {
-        private String token;
+        private final CompanionHttp companion;
+        private volatile boolean active = true;
         private volatile boolean pageServed;
 
-        DashboardClient(String token) {
-            this.token = token;
+        DashboardClient(CompanionHttp companion) {
+            this.companion = companion;
         }
 
         @Override
@@ -285,26 +319,11 @@ public final class MainActivity extends Activity {
             String url = request.getUrl().toString();
             CompanionHttp.Route route = CompanionHttp.route(url, request.getMethod(),
                     request.isForMainFrame());
-            if (route == CompanionHttp.Route.BLOCKED || request.isRedirect()) {
+            if (!active || route == CompanionHttp.Route.BLOCKED || request.isRedirect()) {
                 return denied();
             }
-            if (route == CompanionHttp.Route.ACTION) {
-                // Android does not expose a POST body here. The dashboard fetch uses
-                // redirect:'error', and the document CSP also blocks off-origin connections.
-                // Framework WebView uses Chromium's implicit proxy bypass for loopback.
-                return pageServed ? null : denied();
-            }
             try {
-                String authorization = null;
-                if (route == CompanionHttp.Route.STATE) {
-                    for (Map.Entry<String, String> entry : request.getRequestHeaders().entrySet()) {
-                        if ("Authorization".equalsIgnoreCase(entry.getKey())) {
-                            authorization = entry.getValue();
-                            break;
-                        }
-                    }
-                }
-                CompanionHttp.Response result = CompanionHttp.get(route, authorization);
+                CompanionHttp.Response result = companion.get(route);
                 if (route == CompanionHttp.Route.PAGE) {
                     pageServed = result.status == 200;
                 }
@@ -324,26 +343,9 @@ public final class MainActivity extends Activity {
 
         @Override
         public void onPageFinished(WebView view, String url) {
-            if (dashboard != view || !pageServed || !CompanionHttp.ROOT_URL.equals(url)
-                    || token == null) {
-                return;
+            if (dashboard == view && pageServed && CompanionHttp.ROOT_URL.equals(url)) {
+                waiting.setVisibility(View.GONE);
             }
-            // evaluateJavascript runs in the main document and exposes no native Java methods.
-            String quoted = JSONObject.quote(token);
-            token = null;
-            view.evaluateJavascript("(function(){"
-                    + "if(window!==window.top||location.href!=='" + CompanionHttp.ROOT_URL
-                    + "')return false;"
-                    + "Object.defineProperty(window,'PortalPairing',{value:Object.freeze({"
-                    + "token:function(){return " + quoted + ";}})});"
-                    + "window.dispatchEvent(new Event('portal-pairing-ready'));return true;})()",
-                    result -> {
-                        if (dashboard == view && "true".equals(result)) {
-                            waiting.setVisibility(View.GONE);
-                        } else {
-                            dashboardFailed(view);
-                        }
-                    });
         }
 
         @Override
@@ -359,6 +361,35 @@ public final class MainActivity extends Activity {
                 showWaiting(R.string.waiting_for_companion);
             }
             return true;
+        }
+    }
+
+    public static final class ActionBridge {
+        private static final String UNAVAILABLE =
+                "{\"ok\":false,\"message\":\"Action result unavailable. Check the desktop before retrying.\"}";
+        private final DashboardClient client;
+
+        private ActionBridge(DashboardClient client) {
+            this.client = client;
+        }
+
+        @JavascriptInterface
+        public String sendAction(String action) {
+            if (!client.active || !client.pageServed) {
+                return UNAVAILABLE;
+            }
+            try {
+                // The bridge runs off the Android UI thread. Only this fixed pinned POST is exposed.
+                CompanionHttp.Response result = client.companion.sendAction(action);
+                if (result.status == 200) {
+                    return new String(result.body, StandardCharsets.UTF_8);
+                }
+            } catch (IllegalArgumentException e) {
+                return "{\"ok\":false,\"message\":\"Unsupported action.\"}";
+            } catch (IOException e) {
+                return UNAVAILABLE;
+            }
+            return UNAVAILABLE;
         }
     }
 }
